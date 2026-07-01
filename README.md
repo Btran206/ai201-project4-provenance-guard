@@ -4,6 +4,47 @@ A Flask app that receives text submissions and runs two detection signals agains
 
 ---
 
+## Quickstart
+
+**Prerequisites:** Python 3.10+
+
+   **Create and activate a virtual environment**
+   ```bash
+   python -m venv .venv
+   # macOS/Linux
+   source .venv/bin/activate
+   # Windows
+   .venv\Scripts\activate
+   ```
+
+   **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+   **Set up your Groq API key**
+
+   Create a `.env` file in the project root:
+   ```
+   GROQ_API_KEY=your_key_here
+   ```
+   Get a free key (no credit card required) at [console.groq.com](https://console.groq.com).
+
+   **Run the app**
+   ```bash
+   python app.py
+   ```
+   The server starts at `http://127.0.0.1:5000`.
+
+   **Submit text for classification**
+   ```bash
+   curl -X POST http://127.0.0.1:5000/submit \
+     -H "Content-Type: application/json" \
+     -d '{"content": "your text here", "creator_id": "user1"}'
+   ```
+
+---
+
 ## Architecture Overview
 
 ### Flow 1 — Submission
