@@ -26,14 +26,45 @@ The system combines two independent signals and weights them into a final confid
 
 ### Signal 1 — Heuristic / Statistical Analysis
 Computes measurable stylometric features directly from the text — no external calls needed.
+Each feature returns a 0–1 sub-score where **near 1 = AI-like** and **near 0 = human-like**.
+The final heuristic score is a *weighted* average of the active sub-scores (see Weighting & Renormalization).
 
-Metrics captured:
-- **Average sentence length** — AI tends toward uniform, moderate-length sentences
-- **Vocabulary richness** (Type-Token Ratio) — AI output can have lower lexical diversity
-- **Punctuation pattern variance** — humans use em-dashes, ellipses, and fragments more erratically
-- **Burstiness** — humans write in bursts of short and long sentences; AI is more uniform
+#### Feature catalog
+| Feature | Direction | What it measures | Notes |
+|---|---|---|---|
+| **Type-token ratio (TTR)** | low diversity → AI | unique words / total words | length-gated: only counted at ≥ 150 words |
+| **Sentence-length uniformity** | uniform → AI | coefficient of variation of sentence word-counts | prose only; `null` for verse |
+| **Human punctuation variance** | sparse → AI | density of `-`, `...`, `!`, `?` | humans use these more erratically |
+| **Structural punctuation** | dense → AI | density of commas, em-dashes, colons, semicolons | AI favors complex clause structure |
+| **Contractions** | absent → AI | density of contractions (`don't`, `it's`, …) | formal AI prose avoids them |
+| **Capitalization irregularity** | regular → AI | lowercase sentence starts + lowercase pronoun "i" | casual humans skip capitals |
+| **Repeated sentence starts** | repetitive → AI | share of sentences sharing a 2-word opener | length-gated: only counted at ≥ 4 sentences |
+| **Formulaic transition density** | dense → AI | density of transition phrases (`furthermore`, `consequently`, …) | AI overuses these |
 
-This signal is fast, deterministic, and provides an interpretable numeric sub-score.
+#### Content-type detection (prose vs. verse)
+Before scoring, `_is_verse()` checks line structure (≥ 3 non-empty lines, avg < 10 words/line,
+> 70% of lines under 12 words). Verse skips **sentence-length uniformity** (`null`) because uniform
+line length is a poetic convention, not an AI tell. All other features stay active for verse, but use a
+separate weight table (`VERSE_WEIGHTS`) that redistributes the missing uniformity weight.
+
+#### Weighting & renormalization
+Each active feature contributes its sub-score times a fixed weight. Two situations remove a feature
+from the average entirely (rather than letting it contribute a misleading `0.0`):
+- **Length-gated features** — TTR (< 150 words) and repeated sentence starts (< 4 sentences) cannot be
+  reliably measured on short text, where a floored `0.0` would read as a false "human" vote.
+- **Verse-skipped uniformity** — excluded for verse as described above.
+
+The score is then **renormalized over only the features that fired**:
+```
+final_score = Σ(sub_score · weight  for active features) / Σ(weight for active features)
+```
+The list of features that actually contributed is returned as `active_features` for transparency.
+
+#### Signal confidence
+A separate `signal_confidence` field reports how much to trust the heuristic based on length:
+`low` (< 80 words), `medium` (< 250 words), `high` (≥ 250 words). Short texts produce unstable feature
+values and should be weighted lower by any downstream consumer.
+
 
 ### Signal 2 — LLM-Based Probabilistic Classification
 Sends the content to Groq (`llama-3.3-70b-versatile`) with a structured prompt asking the model to assess the
@@ -58,9 +89,15 @@ as a sanity check and ensures the system degrades gracefully if the LLM call fai
 
 | Score Range | Classification | Label Text (shown to user) |
 |---|---|---|
-| ≥ 0.80 | High-confidence AI | "This content was likely generated with AI assistance. Our system is highly confident in this assessment." |
-| ≤ 0.20 | High-confidence Human | "This content appears to be written by a human. Our system is highly confident in this assessment." |
-| 0.21–0.79 | Uncertain | "Our system could not confidently determine whether this content was AI-generated or human-written. The classification is shown as uncertain." |
+| ≥ 0.75 | High-confidence AI | "This content was likely generated with AI assistance. Our system is highly confident in this assessment." |
+| ≤ 0.25 | High-confidence Human | "This content appears to be written by a human. Our system is highly confident in this assessment." |
+| 0.26–0.74 | Uncertain | "Our system could not confidently determine whether this content was AI-generated or human-written. The classification is shown as uncertain." |
+
+> **Threshold note:** the bands were widened from 0.80/0.20 to 0.75/0.25 after testing against a
+> 10-sample suite. Fused scores cluster around ~0.20 (human) and ~0.70 (AI); the tighter bands left
+> most correct classifications stranded in `uncertain`. The 0.75/0.25 bands recovered them while still
+> keeping the known hard cases (formal human prose at ~0.70, contraction-heavy marketing AI at ~0.64)
+> safely in `uncertain` rather than producing a confident mislabel.
 
 ---
 
@@ -72,7 +109,7 @@ There are exactly three label variants. Each has a machine-readable `variant` ke
 
 ### Variant: `"high-confidence-ai"`
 
-- **Triggers when:** confidence score ≥ 0.80
+- **Triggers when:** confidence score ≥ 0.75
 - **Internal classification:** `"ai"`
 - **Display text:** "This content was likely generated with AI assistance. Our system is highly confident in this assessment."
 - **What it communicates:** The system examined the text across both signals and both agreed strongly that the writing patterns, vocabulary, and structure are consistent with AI-generated output. The reader is told directly, not hedged.
@@ -81,16 +118,16 @@ There are exactly three label variants. Each has a machine-readable `variant` ke
 
 ### Variant: `"high-confidence-human"`
 
-- **Triggers when:** confidence score ≤ 0.20
+- **Triggers when:** confidence score ≤ 0.25
 - **Internal classification:** `"human"`
 - **Display text:** "This content appears to be written by a human. Our system is highly confident in this assessment."
-- **What it communicates:** Both signals returned low AI-likelihood scores. The text shows the kind of irregularity, burstiness, and stylistic idiosyncrasy the system associates with human writing. The reader is given a positive human attribution, not just the absence of an AI flag.
+- **What it communicates:** Both signals returned low AI-likelihood scores. The text shows the kind of irregularity, varied sentence rhythm, and stylistic idiosyncrasy the system associates with human writing. The reader is given a positive human attribution, not just the absence of an AI flag.
 
 ---
 
 ### Variant: `"uncertain"`
 
-- **Triggers when:** confidence score is between 0.21 and 0.79 (inclusive)
+- **Triggers when:** confidence score is between 0.26 and 0.74 (inclusive)
 - **Internal classification:** `"uncertain"`
 - **Display text:** "Our system could not confidently determine whether this content was AI-generated or human-written. The classification is shown as uncertain."
 - **What it communicates:** The signals did not agree strongly enough to commit to either attribution. This is an honest statement of system uncertainty — it does not assert AI, it does not clear the content as human. It is also the variant most likely to surface in an appeal, since creators whose work was genuinely human-written but stylistically regular will land here rather than in `"high-confidence-ai"`.
@@ -117,14 +154,56 @@ Response:
   "content_id": "uuid",
   "classification": "ai | human | uncertain",
   "confidence": 0.87,
-  "label": { "variant": "high-confidence-ai", "text": "..." },
+  "label": { "variant": "high-confidence-ai | high-confidence-human | uncertain", "text": "..." },
   "signals": {
-    "heuristic": { "score": 0.82, "features": {} },
+    "heuristic": {
+      "score": 0.82,
+      "signal_confidence": "low | medium | high",
+      "features": {
+        "content_type": "prose | verse",
+        "ttr": 0.61,
+        "ttr_score": 0.26,
+        "sentence_length_cv": 0.42,
+        "sentence_length_uniformity_score": 0.71,
+        "human_punct_density": 0.02,
+        "punct_score": 0.80,
+        "comma_count": 6,
+        "em_dash_count": 1,
+        "colon_count": 0,
+        "semicolon_count": 0,
+        "struct_punct_density": 0.07,
+        "struct_punct_score": 0.88,
+        "contraction_count": 0,
+        "contraction_density": 0.0,
+        "contraction_score": 1.0,
+        "lowercase_sentence_start_ratio": 0.0,
+        "lowercase_i_ratio": 0.0,
+        "capitalization_score": 1.0,
+        "repeated_start_ratio": 0.0,
+        "repeated_start_score": 0.0,
+        "transition_count": 2,
+        "transition_density": 0.03,
+        "transition_score": 0.75,
+        "active_features": ["capitalization", "contractions", "human_punctuation",
+                            "sentence_length_uniformity", "structural_punctuation",
+                            "transition_density"]
+      }
+    },
     "llm": { "score": 0.90, "reasoning": "..." }
   },
   "timestamp": "ISO8601"
 }
 ```
+
+Notes on the heuristic features:
+- `content_type` indicates which code path ran (`prose` or `verse`).
+- For **verse** inputs, `sentence_length_cv` and `sentence_length_uniformity_score` are `null`
+  (uniformity is prose-only).
+- The raw feature values (e.g. `ttr`, `comma_count`, `transition_count`) are always reported, but a
+  feature only influences the score if it appears in `active_features`. **Length-gated** features are
+  excluded from the weighted average: `ttr` below 150 words and `repeated_sentence_starts` below 4
+  sentences. The score is renormalized over whichever features fired.
+- `signal_confidence` reflects text length (`low` < 80 words, `medium` < 250, `high` ≥ 250).
 
 ### POST /appeal
 Lets a creator contest a classification.
@@ -210,7 +289,9 @@ per-user tracking.
 
 **What to ask the AI tool to generate:**
 - Flask app skeleton: `app.py` with `POST /submit` route, request validation, and a stub response shape
-- `signals/heuristic.py`: the four feature measurements (sentence length uniformity, TTR, punctuation variance, burstiness) combined into a 0–1 sub-score
+- `signals/heuristic.py`: stylometric feature measurements combined into a 0–1 sub-score (the
+  initial M1 set — sentence-length uniformity, TTR, punctuation variance — was later expanded; see the
+  Signal 1 feature catalog above for the current set and the renormalization logic)
 - `store.py`: SQLite setup with the content record table and an `insert_content`, `insert_audit_log`, and `update_content_status` functions
 - `GET /log` audit entries writing on every submission
 

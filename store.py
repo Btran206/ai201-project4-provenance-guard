@@ -40,6 +40,16 @@ def init_db():
                 status         TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS appeals (
+                appeal_id   TEXT PRIMARY KEY,
+                content_id  TEXT NOT NULL,
+                creator_id  TEXT,
+                reason      TEXT NOT NULL,
+                timestamp   TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'under_review'
+            )
+        """)
         conn.commit()
 
 
@@ -113,3 +123,32 @@ def get_content(content_id: str):
             "SELECT * FROM content_records WHERE content_id = ?", (content_id,)
         ).fetchone()
     return dict(row) if row else None
+
+
+def get_appeal_by_content_id(content_id: str):
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM appeals WHERE content_id = ?", (content_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def insert_appeal(appeal_id: str, content_id: str, creator_id, reason: str, timestamp: str):
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO appeals (appeal_id, content_id, creator_id, reason, timestamp, status)
+            VALUES (?, ?, ?, ?, ?, 'under_review')
+            """,
+            (appeal_id, content_id, creator_id, reason, timestamp),
+        )
+        conn.commit()
+
+
+def update_content_appeal_status(content_id: str, status: str):
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE content_records SET status = ? WHERE content_id = ?",
+            (status, content_id),
+        )
+        conn.commit()
